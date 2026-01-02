@@ -1,6 +1,7 @@
 package viamkiosk
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -65,10 +66,39 @@ func NewKiosk(ctx context.Context, deps resource.Dependencies, name resource.Nam
 	cancelCtx, cancelFunc := context.WithCancel(context.Background())
 
 	cmd := exec.Command("xinit", "chromium", "--kiosk", "--noerrdialogs", "--disable-infobars", "--no-first-run", conf.URL)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		cancelFunc()
+		return nil, fmt.Errorf("failed to get stdout pipe: %w", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		cancelFunc()
+		return nil, fmt.Errorf("failed to get stderr pipe: %w", err)
+	}
+
 	if err := cmd.Start(); err != nil {
 		cancelFunc()
 		return nil, fmt.Errorf("failed to start kiosk: %w", err)
 	}
+
+	// Log stdout as info
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			logger.Infof("kiosk: %s", scanner.Text())
+		}
+	}()
+
+	// Log stderr as warning
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			logger.Warnf("kiosk: %s", scanner.Text())
+		}
+	}()
 
 	s := &viamKioskKiosk{
 		name:       name,
