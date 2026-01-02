@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
@@ -24,34 +25,14 @@ func init() {
 }
 
 type Config struct {
-	/*
-		Put config attributes here. There should be public/exported fields
-		with a `json` parameter at the end of each attribute.
-
-		Example config struct:
-			type Config struct {
-				Pin   string `json:"pin"`
-				Board string `json:"board"`
-				MinDeg *float64 `json:"min_angle_deg,omitempty"`
-			}
-
-		If your model does not need a config, replace *Config in the init
-		function with resource.NoNativeConfig
-	*/
+	URL            string `json:"url"`
+	RefreshSeconds int    `json:"refresh_seconds"`
 }
 
-// Validate ensures all parts of the config are valid and important fields exist.
-// Returns three values:
-//  1. Required dependencies: other resources that must exist for this resource to work.
-//  2. Optional dependencies: other resources that may exist but are not required.
-//  3. An error if any Config fields are missing or invalid.
-//
-// The `path` parameter indicates
-// where this resource appears in the machine's JSON configuration
-// (for example, "components.0"). You can use it in error messages
-// to indicate which resource has a problem.
 func (cfg *Config) Validate(path string) ([]string, []string, error) {
-	// Add config validation code here
+	if cfg.URL == "" {
+		return nil, nil, fmt.Errorf("need a url")
+	}
 	return nil, nil, nil
 }
 
@@ -65,6 +46,8 @@ type viamKioskKiosk struct {
 
 	cancelCtx  context.Context
 	cancelFunc func()
+
+	cmd *exec.Cmd
 }
 
 func newViamKioskKiosk(ctx context.Context, deps resource.Dependencies, rawConf resource.Config, logger logging.Logger) (resource.Resource, error) {
@@ -81,12 +64,19 @@ func NewKiosk(ctx context.Context, deps resource.Dependencies, name resource.Nam
 
 	cancelCtx, cancelFunc := context.WithCancel(context.Background())
 
+	cmd := exec.Command("xinit", "chromium", "--kiosk", "--noerrdialogs", "--disable-infobars", "--no-first-run", conf.URL)
+	if err := cmd.Start(); err != nil {
+		cancelFunc()
+		return nil, fmt.Errorf("failed to start kiosk: %w", err)
+	}
+
 	s := &viamKioskKiosk{
 		name:       name,
 		logger:     logger,
 		cfg:        conf,
 		cancelCtx:  cancelCtx,
 		cancelFunc: cancelFunc,
+		cmd:        cmd,
 	}
 	return s, nil
 }
@@ -100,7 +90,9 @@ func (s *viamKioskKiosk) DoCommand(ctx context.Context, cmd map[string]interface
 }
 
 func (s *viamKioskKiosk) Close(context.Context) error {
-	// Put close code here
 	s.cancelFunc()
+	if s.cmd != nil && s.cmd.Process != nil {
+		s.cmd.Process.Kill()
+	}
 	return nil
 }

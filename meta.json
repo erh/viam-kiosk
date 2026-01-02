@@ -2,7 +2,7 @@
   "$schema": "https://dl.viam.dev/module.schema.json",
   "module_id": "erh:viam-kiosk",
   "visibility": "public",
-  "url": "",
+  "url": "https://github.com/erh/viam-kiosk",
   "description": "Modular generic service: Kiosk",
   "applications": null,
   "markdown_link": "README.md",
@@ -14,9 +14,7 @@
     "path": "module.tar.gz",
     "arch": [
       "linux/amd64",
-      "linux/arm64",
-      "darwin/arm64",
-      "windows/amd64"
+      "linux/arm64"
     ]
   }
 }
