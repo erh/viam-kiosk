@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 
 	"go.viam.com/rdk/logging"
@@ -65,7 +66,19 @@ func NewKiosk(ctx context.Context, deps resource.Dependencies, name resource.Nam
 
 	cancelCtx, cancelFunc := context.WithCancel(context.Background())
 
-	cmd := exec.Command("cage", "-s", "--", "chromium", "--kiosk", "--noerrdialogs", "--disable-infobars", "--no-first-run", conf.URL)
+	// Ensure XDG_RUNTIME_DIR exists for Wayland
+	xdgRuntimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if xdgRuntimeDir == "" {
+		xdgRuntimeDir = "/run/user/0"
+		os.MkdirAll(xdgRuntimeDir, 0700)
+	}
+
+	cmd := exec.Command("cage", "-s", "--", "chromium", "--kiosk", "--noerrdialogs", "--disable-infobars", "--no-first-run", "--no-sandbox", conf.URL)
+	cmd.Env = append(os.Environ(),
+		"XDG_RUNTIME_DIR="+xdgRuntimeDir,
+		"WLR_LIBINPUT_NO_DEVICES=1",
+		"LIBSEAT_BACKEND=noop",
+	)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
