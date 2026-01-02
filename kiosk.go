@@ -65,7 +65,7 @@ func NewKiosk(ctx context.Context, deps resource.Dependencies, name resource.Nam
 
 	cancelCtx, cancelFunc := context.WithCancel(context.Background())
 
-	cmd := exec.Command("xinit", "chromium", "--kiosk", "--noerrdialogs", "--disable-infobars", "--no-first-run", conf.URL, "--", ":0")
+	cmd := exec.Command("xinit", "chromium", "--kiosk", "--noerrdialogs", "--disable-infobars", "--no-first-run", conf.URL, "--", ":0", "vt1")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
