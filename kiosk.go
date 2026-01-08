@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
+	"time"
 
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
@@ -49,7 +51,9 @@ type viamKioskKiosk struct {
 	cancelCtx  context.Context
 	cancelFunc func()
 
-	cmd *exec.Cmd
+	mu            sync.Mutex
+	cmd           *exec.Cmd
+	xdgRuntimeDir string
 }
 
 func newViamKioskKiosk(ctx context.Context, deps resource.Dependencies, rawConf resource.Config, logger logging.Logger) (resource.Resource, error) {
@@ -73,35 +77,60 @@ func NewKiosk(ctx context.Context, deps resource.Dependencies, name resource.Nam
 		os.MkdirAll(xdgRuntimeDir, 0700)
 	}
 
-	cmd := exec.Command("cage", "-s", "--", "chromium", "--kiosk", "--noerrdialogs", "--disable-infobars", "--no-first-run", "--no-sandbox", conf.URL)
+	s := &viamKioskKiosk{
+		name:          name,
+		logger:        logger,
+		cfg:           conf,
+		cancelCtx:     cancelCtx,
+		cancelFunc:    cancelFunc,
+		xdgRuntimeDir: xdgRuntimeDir,
+	}
+
+	if err := s.startBrowser(); err != nil {
+		cancelFunc()
+		return nil, err
+	}
+
+	// Start refresh loop if configured
+	if conf.RefreshSeconds > 0 {
+		go s.refreshLoop()
+	}
+
+	return s, nil
+}
+
+func (s *viamKioskKiosk) startBrowser() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cmd := exec.Command("cage", "-s", "--", "chromium", "--kiosk", "--noerrdialogs", "--disable-infobars", "--no-first-run", "--no-sandbox", s.cfg.URL)
 	cmd.Env = append(os.Environ(),
-		"XDG_RUNTIME_DIR="+xdgRuntimeDir,
+		"XDG_RUNTIME_DIR="+s.xdgRuntimeDir,
 		"WLR_LIBINPUT_NO_DEVICES=1",
 		"LIBSEAT_BACKEND=noop",
 	)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		cancelFunc()
-		return nil, fmt.Errorf("failed to get stdout pipe: %w", err)
+		return fmt.Errorf("failed to get stdout pipe: %w", err)
 	}
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		cancelFunc()
-		return nil, fmt.Errorf("failed to get stderr pipe: %w", err)
+		return fmt.Errorf("failed to get stderr pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		cancelFunc()
-		return nil, fmt.Errorf("failed to start kiosk: %w", err)
+		return fmt.Errorf("failed to start kiosk: %w", err)
 	}
+
+	s.cmd = cmd
 
 	// Log stdout as info
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
-			logger.Infof("kiosk: %s", scanner.Text())
+			s.logger.Infof("kiosk: %s", scanner.Text())
 		}
 	}()
 
@@ -109,19 +138,40 @@ func NewKiosk(ctx context.Context, deps resource.Dependencies, name resource.Nam
 	go func() {
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
-			logger.Warnf("kiosk: %s", scanner.Text())
+			s.logger.Warnf("kiosk: %s", scanner.Text())
 		}
 	}()
 
-	s := &viamKioskKiosk{
-		name:       name,
-		logger:     logger,
-		cfg:        conf,
-		cancelCtx:  cancelCtx,
-		cancelFunc: cancelFunc,
-		cmd:        cmd,
+	return nil
+}
+
+func (s *viamKioskKiosk) stopBrowser() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.cmd != nil && s.cmd.Process != nil {
+		s.cmd.Process.Kill()
+		s.cmd.Wait()
+		s.cmd = nil
 	}
-	return s, nil
+}
+
+func (s *viamKioskKiosk) refreshLoop() {
+	ticker := time.NewTicker(time.Duration(s.cfg.RefreshSeconds) * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.cancelCtx.Done():
+			return
+		case <-ticker.C:
+			s.logger.Infof("refreshing kiosk")
+			s.stopBrowser()
+			if err := s.startBrowser(); err != nil {
+				s.logger.Errorf("failed to restart browser: %v", err)
+			}
+		}
+	}
 }
 
 func (s *viamKioskKiosk) Name() resource.Name {
@@ -134,8 +184,6 @@ func (s *viamKioskKiosk) DoCommand(ctx context.Context, cmd map[string]interface
 
 func (s *viamKioskKiosk) Close(context.Context) error {
 	s.cancelFunc()
-	if s.cmd != nil && s.cmd.Process != nil {
-		s.cmd.Process.Kill()
-	}
+	s.stopBrowser()
 	return nil
 }
