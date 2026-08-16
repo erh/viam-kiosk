@@ -99,11 +99,31 @@ func NewKiosk(ctx context.Context, deps resource.Dependencies, name resource.Nam
 	return s, nil
 }
 
+// findBrowser locates the chromium binary, which is named differently
+// across distros.
+func findBrowser() (string, error) {
+	for _, name := range []string{"chromium", "chromium-browser"} {
+		if path, err := exec.LookPath(name); err == nil {
+			return path, nil
+		}
+	}
+	return "", errors.New("chromium not found; run the module's first_run script or install chromium manually")
+}
+
 func (s *viamKioskKiosk) startBrowser() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cmd := exec.Command("cage", "-s", "--", "chromium", "--kiosk", "--noerrdialogs", "--disable-infobars", "--no-first-run", "--no-sandbox", s.cfg.URL)
+	if _, err := exec.LookPath("cage"); err != nil {
+		return errors.New("cage not found; run the module's first_run script or install cage manually")
+	}
+
+	browser, err := findBrowser()
+	if err != nil {
+		return err
+	}
+
+	cmd := exec.Command("cage", "-s", "--", browser, "--kiosk", "--noerrdialogs", "--disable-infobars", "--no-first-run", "--no-sandbox", s.cfg.URL)
 	cmd.Env = append(os.Environ(),
 		"XDG_RUNTIME_DIR="+s.xdgRuntimeDir,
 		"WLR_LIBINPUT_NO_DEVICES=1",
