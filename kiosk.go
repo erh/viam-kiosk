@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,11 +32,24 @@ func init() {
 type Config struct {
 	URL            string `json:"url"`
 	RefreshSeconds int    `json:"refresh_seconds"`
+	// Scale enlarges everything by this factor, e.g. 2 renders the page
+	// at twice the size, useful on high-dpi displays. 0 means default.
+	Scale float64 `json:"scale"`
+	// Resolution sets the display output mode via wlr-randr,
+	// e.g. "1280x720" or "1920x1080@60". Empty means the display's
+	// native/preferred mode.
+	Resolution string `json:"resolution"`
 }
 
 func (cfg *Config) Validate(path string) ([]string, []string, error) {
 	if cfg.URL == "" {
 		return nil, nil, fmt.Errorf("need a url")
+	}
+	if cfg.Resolution != "" {
+		var w, h int
+		if n, err := fmt.Sscanf(cfg.Resolution, "%dx%d", &w, &h); n != 2 || err != nil {
+			return nil, nil, fmt.Errorf("resolution must look like \"1280x720\" or \"1920x1080@60\", got %q", cfg.Resolution)
+		}
 	}
 	return nil, nil, nil
 }
@@ -123,7 +137,13 @@ func (s *viamKioskKiosk) startBrowser() error {
 		return err
 	}
 
-	cmd := exec.Command("cage", "-s", "--", browser, "--kiosk", "--noerrdialogs", "--disable-infobars", "--no-first-run", "--no-sandbox", s.cfg.URL)
+	args := []string{"-s", "--", browser, "--kiosk", "--noerrdialogs", "--disable-infobars", "--no-first-run", "--no-sandbox"}
+	if s.cfg.Scale > 0 {
+		args = append(args, fmt.Sprintf("--force-device-scale-factor=%g", s.cfg.Scale))
+	}
+	args = append(args, s.cfg.URL)
+
+	cmd := exec.Command("cage", args...)
 	cmd.Env = append(os.Environ(),
 		"XDG_RUNTIME_DIR="+s.xdgRuntimeDir,
 		"WLR_LIBINPUT_NO_DEVICES=1",
@@ -146,6 +166,10 @@ func (s *viamKioskKiosk) startBrowser() error {
 
 	s.cmd = cmd
 
+	if s.cfg.Resolution != "" {
+		go s.applyResolution()
+	}
+
 	// Log stdout as info
 	go func() {
 		scanner := bufio.NewScanner(stdout)
@@ -163,6 +187,85 @@ func (s *viamKioskKiosk) startBrowser() error {
 	}()
 
 	return nil
+}
+
+// findWaylandDisplay finds the wayland socket cage created in our runtime dir.
+func (s *viamKioskKiosk) findWaylandDisplay() (string, error) {
+	entries, err := os.ReadDir(s.xdgRuntimeDir)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, "wayland-") && !strings.HasSuffix(name, ".lock") {
+			return name, nil
+		}
+	}
+	return "", errors.New("no wayland socket yet")
+}
+
+func (s *viamKioskKiosk) runWlrRandr(display string, args ...string) (string, error) {
+	cmd := exec.Command("wlr-randr", args...)
+	cmd.Env = append(os.Environ(),
+		"XDG_RUNTIME_DIR="+s.xdgRuntimeDir,
+		"WAYLAND_DISPLAY="+display,
+	)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// applyResolution sets the display mode via wlr-randr once cage's wayland
+// socket is up. Retries for a bit because cage takes a moment to start.
+func (s *viamKioskKiosk) applyResolution() {
+	res := s.cfg.Resolution
+
+	var lastErr string
+	for i := 0; i < 30; i++ {
+		select {
+		case <-s.cancelCtx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+
+		display, err := s.findWaylandDisplay()
+		if err != nil {
+			lastErr = err.Error()
+			continue
+		}
+
+		// list outputs to get the first output's name
+		listing, err := s.runWlrRandr(display)
+		if err != nil {
+			lastErr = fmt.Sprintf("wlr-randr: %v: %s", err, listing)
+			continue
+		}
+		output := ""
+		for _, line := range strings.Split(listing, "\n") {
+			if line != "" && line[0] != ' ' && line[0] != '\t' {
+				output = strings.Fields(line)[0]
+				break
+			}
+		}
+		if output == "" {
+			lastErr = "no outputs listed by wlr-randr"
+			continue
+		}
+
+		if out, err := s.runWlrRandr(display, "--output", output, "--mode", res); err == nil {
+			s.logger.Infof("set output %s to mode %s", output, res)
+			return
+		} else {
+			lastErr = fmt.Sprintf("wlr-randr --mode: %v: %s", err, out)
+		}
+		// not an advertised mode, ask the display to do it anyway
+		if out, err := s.runWlrRandr(display, "--output", output, "--custom-mode", res); err == nil {
+			s.logger.Infof("set output %s to custom mode %s", output, res)
+			return
+		} else {
+			lastErr = fmt.Sprintf("wlr-randr --custom-mode: %v: %s", err, out)
+		}
+	}
+	s.logger.Errorf("failed to set resolution %q (is wlr-randr installed and cage >= 0.1.5?): %s", res, lastErr)
 }
 
 func (s *viamKioskKiosk) stopBrowser() {
