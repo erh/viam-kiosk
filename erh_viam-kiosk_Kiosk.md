@@ -21,3 +21,5 @@ Provide a description of the model and any relevant information.
 - `scale` (optional): enlarge everything by this factor (e.g. `2` on a
   high-dpi/4K display where the page renders too small). Fractional
   values like `1.5` work too. Omit or `0` for the default.
+- `extra_args` (optional): additional chromium command line flags, e.g.
+  `["--enable-low-end-device-mode"]`.

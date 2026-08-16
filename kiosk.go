@@ -39,6 +39,8 @@ type Config struct {
 	// e.g. "1280x720" or "1920x1080@60". Empty means the display's
 	// native/preferred mode.
 	Resolution string `json:"resolution"`
+	// ExtraArgs are additional chromium command line flags.
+	ExtraArgs []string `json:"extra_args"`
 }
 
 func (cfg *Config) Validate(path string) ([]string, []string, error) {
@@ -137,10 +139,26 @@ func (s *viamKioskKiosk) startBrowser() error {
 		return err
 	}
 
-	args := []string{"-s", "--", browser, "--kiosk", "--noerrdialogs", "--disable-infobars", "--no-first-run", "--no-sandbox"}
+	args := []string{"-s", "--", browser,
+		"--kiosk", "--noerrdialogs", "--disable-infobars", "--no-first-run", "--no-sandbox",
+		// run natively on cage's wayland instead of through Xwayland
+		"--ozone-platform-hint=auto",
+		// try the GPU even on boards chromium has blocklisted
+		"--ignore-gpu-blocklist",
+		// turn off background services a kiosk doesn't need
+		"--disable-extensions",
+		"--disable-component-update",
+		"--disable-background-networking",
+		"--disable-sync",
+		"--disable-breakpad",
+		"--metrics-recording-only",
+		"--no-default-browser-check",
+		"--disable-smooth-scrolling",
+	}
 	if s.cfg.Scale > 0 {
 		args = append(args, fmt.Sprintf("--force-device-scale-factor=%g", s.cfg.Scale))
 	}
+	args = append(args, s.cfg.ExtraArgs...)
 	args = append(args, s.cfg.URL)
 
 	cmd := exec.Command("cage", args...)
